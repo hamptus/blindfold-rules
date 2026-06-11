@@ -1,0 +1,33 @@
+name: Update rule lists
+
+on:
+  schedule:
+    - cron: "0 6 * * *"   # daily — EasyList expects refreshes every ~4 days
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest   # WebKit validation needs WKContentRuleListStore
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build lists from upstream sources
+        run: python3 tools/build_lists.py --dist v1
+
+      - name: Validate with WebKit's compiler
+        run: swift tools/validate_rules.swift v1/ads.json v1/privacy.json v1/annoyances.json
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "blindfold-rules-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add v1
+          if git diff --cached --quiet; then
+            echo "No changes."
+          else
+            git commit -m "Update rule lists $(date -u +%Y-%m-%d)"
+            git push
+          fi
