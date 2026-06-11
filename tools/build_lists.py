@@ -35,16 +35,43 @@ import generate_rules
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# Regional EasyList-family lists matching Blindfold's localized markets — an
+# English-only blocklist is useless on heise.de or lemonde.fr. Each source is
+# optional (a 404 upstream must never break the build) and capped so no single
+# list can crowd out the rest. No maintained ABP-format mirror exists for
+# Japanese; revisit when one does.
+ADBP = "https://easylist-downloads.adblockplus.org"
+REGIONAL_LISTS = [
+    {"name": "easylistgermany", "urls": ["https://easylist.to/easylistgermany/easylistgermany.txt"]},
+    {"name": "liste_fr", "urls": [f"{ADBP}/liste_fr.txt"]},
+    {"name": "easylistitaly", "urls": [f"{ADBP}/easylistitaly.txt"]},
+    {"name": "easylistspanish", "urls": [f"{ADBP}/easylistspanish.txt"]},
+    {"name": "easylistportuguese", "urls": [f"{ADBP}/easylistportuguese.txt"]},
+    {"name": "easylistdutch", "urls": [f"{ADBP}/easylistdutch.txt"]},
+    {"name": "ruadlist", "urls": [f"{ADBP}/advblock.txt"]},          # RU + UA
+    {"name": "easylistchina", "urls": [f"{ADBP}/easylistchina.txt"]},
+    {"name": "abpindo", "urls": [f"{ADBP}/abpindo.txt"]},            # Indonesian
+    {"name": "indianlist", "urls": [f"{ADBP}/indianlist.txt"]},
+    {"name": "koreanlist", "urls": [f"{ADBP}/koreanlist.txt"]},
+]
+REGIONAL_CAP = 6_000   # network rules per regional list
+
 SOURCES = {
     "ads": {
         "urls": ["https://easylist.to/easylist/easylist.txt"],
         "extras": generate_rules.build_ads,
+        "supplements": REGIONAL_LISTS,
         "max_rules": 145_000,
         "output": "ContentBlockers/Ads/blockerList.json",
     },
     "privacy": {
         "urls": ["https://easylist.to/easylist/easyprivacy.txt"],
         "extras": generate_rules.build_privacy,
+        # Peter Lowe's ad/tracking server list — a default in uBlock/AdGuard.
+        "supplements": [{
+            "name": "peterlowe",
+            "urls": ["https://pgl.yoyo.org/adservers/serverlist.php?hostformat=adblockplus&showintro=0&mimetype=plaintext"],
+        }],
         "max_rules": 145_000,
         "output": "ContentBlockers/Privacy/blockerList.json",
     },
@@ -60,10 +87,10 @@ SOURCES = {
 }
 
 
-def fetch(urls, cache_dir):
-    name = os.path.basename(urls[0])
+def fetch(urls, cache_dir, name=None, optional=False):
+    name = name or os.path.basename(urls[0])
     if cache_dir:
-        path = os.path.join(cache_dir, name)
+        path = os.path.join(cache_dir, name if name.endswith(".txt") else f"{name}.txt")
         if os.path.exists(path):
             print(f"  using cached {path}")
             return open(path, encoding="utf-8", errors="replace").read()
@@ -76,6 +103,9 @@ def fetch(urls, cache_dir):
                 return response.read().decode("utf-8", errors="replace")
         except Exception as error:  # try the mirror
             last_error = error
+    if optional:
+        print(f"  WARNING: skipping optional source {name}: {last_error}")
+        return None
     raise SystemExit(f"failed to fetch {name}: {last_error}")
 
 
@@ -100,6 +130,21 @@ def build(list_id, spec, cache_dir):
     print(f"[{list_id}]")
     text = fetch(spec["urls"], cache_dir)
     buckets, stats = abp2safari.convert(text.splitlines())
+
+    # Supplementary sources (regional lists, Peter Lowe's). Their exceptions
+    # ride along too — regional lists whitelist sites their rules would break.
+    for supplement in spec.get("supplements", []):
+        sup_text = fetch(supplement["urls"], cache_dir, name=supplement["name"], optional=True)
+        if sup_text is None:
+            continue
+        sup_buckets, _ = abp2safari.convert(sup_text.splitlines())
+        kept = 0
+        for bucket_name, rules in sup_buckets.items():
+            if bucket_name == "network":
+                rules = rules[:REGIONAL_CAP]
+            buckets[bucket_name].extend(rules)
+            kept += len(rules)
+        print(f"  + {supplement['name']}: {kept:,} rules")
 
     # Curated Blindfold rules ride in front of the standard list's network
     # block so list-level exceptions can still cancel them.
