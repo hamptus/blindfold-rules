@@ -12,7 +12,7 @@ jobs:
   build:
     runs-on: macos-latest   # WebKit validation needs WKContentRuleListStore
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build lists from upstream sources
         run: python3 tools/build_lists.py --dist v1
