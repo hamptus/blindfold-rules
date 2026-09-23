@@ -2,11 +2,12 @@ name: Update rule lists
 
 on:
   schedule:
-    - cron: "0 6 * * *"   # daily — EasyList expects refreshes every ~4 days
+    - cron: "0 6 * * *"   # daily; EasyList expects refreshes every ~4 days
   workflow_dispatch:
 
 permissions:
   contents: write
+  issues: write
 
 jobs:
   build:
@@ -14,11 +15,18 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # tools/ is a synced copy of hamptus/Blindfold's tools/ (see
+      # tools/SOURCE). A hand edit here, or a partial sync, would silently
+      # publish lists built by a different converter than the app ships, which
+      # is how the published lists lost the June converter fixes.
+      - name: Check tools match the recorded Blindfold sync
+        run: shasum -a 256 -c tools/SOURCE.sha256
+
       - name: Build lists from upstream sources
         run: python3 tools/build_lists.py --dist v1
 
       - name: Validate with WebKit's compiler
-        run: swift tools/validate_rules.swift v1/ads.json v1/privacy.json v1/annoyances.json
+        run: swift tools/validate_rules.swift --prune v1/ads.json v1/privacy.json v1/annoyances.json
 
       - name: Commit and push if changed
         run: |
@@ -30,4 +38,22 @@ jobs:
           else
             git commit -m "Update rule lists $(date -u +%Y-%m-%d)"
             git push
+          fi
+
+      # A failed run otherwise just leaves the published lists stale with no
+      # signal. One open issue at a time; later failures comment on it.
+      - name: Report failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RUN="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          OPEN=$(gh issue list --label rules-build-failure --state open --json number --jq '.[0].number')
+          if [ -n "$OPEN" ]; then
+            gh issue comment "$OPEN" --body "Failed again: $RUN"
+          else
+            gh label create rules-build-failure --color B60205 2>/dev/null || true
+            gh issue create --label rules-build-failure \
+              --title "Daily rule build failed" \
+              --body "The published lists were not updated. Run: $RUN"
           fi

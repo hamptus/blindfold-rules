@@ -16,7 +16,7 @@ into it at compile time (imports are capped at 50,000 in the app).
 
 ALWAYS validate the output before committing:
 
-    swift tools/validate_rules.swift ContentBlockers/*/blockerList.json
+    swift tools/validate_rules.swift --prune ContentBlockers/*/blockerList.json
 
 Usage:
     python3 tools/build_lists.py [--cache DIR]   # DIR holds pre-downloaded .txt
@@ -81,6 +81,13 @@ SOURCES = {
             "https://easylist.to/easylist/fanboy-annoyance.txt",
         ],
         "extras": generate_rules.build_annoyances,
+        # AdGuard Annoyances (uBO-format build): cookie notices, popups,
+        # widgets — strong procedural/scriptlet coverage Fanboy lacks.
+        # assemble() dedupes the overlap with Fanboy.
+        "supplements": [{
+            "name": "adguard_annoyances",
+            "urls": ["https://filters.adtidy.org/extension/ublock/filters/14.txt"],
+        }],
         "max_rules": 95_000,
         "output": "ContentBlockers/Annoyances/blockerList.json",
     },
@@ -126,10 +133,52 @@ def host_only_domains(text):
     return domains
 
 
-def build(list_id, spec, cache_dir):
+SCOPING_KEYS = ("if-domain", "unless-domain", "if-top-url", "unless-top-url",
+                "resource-type", "load-type", "load-context")
+MIN_UNSCOPED_EXCEPTION_FILTER = 8
+
+
+def lint_rules(rules):
+    """Rules that would silently disable a whole list. An `ignore-previous-rules`
+    with no scope and a match-everything url-filter cancels every earlier rule
+    on every page, and WebKit compiles it without complaint."""
+    problems = []
+    for index, rule in enumerate(rules):
+        if rule.get("action", {}).get("type") != "ignore-previous-rules":
+            continue
+        trigger = rule.get("trigger", {})
+        if any(key in trigger for key in SCOPING_KEYS):
+            continue
+        url_filter = trigger.get("url-filter", "")
+        if url_filter in (".*", "*", "^", "") or len(url_filter) < MIN_UNSCOPED_EXCEPTION_FILTER:
+            problems.append(f"rule {index}: unscoped ignore-previous-rules {json.dumps(rule)}")
+    return problems
+
+
+MIN_PRIMARY_LINES = 10_000
+MIN_KEPT_FRACTION = 0.70
+
+
+def previous_rule_count(path):
+    """Rule count of the list about to be replaced, or None."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return len(json.load(f))
+    except (OSError, ValueError):
+        return None
+
+
+def build(list_id, spec, cache_dir, allow_shrink=False):
     print(f"[{list_id}]")
     text = fetch(spec["urls"], cache_dir)
-    buckets, stats = abp2safari.convert(text.splitlines())
+    # A truncated download or an HTML challenge page served with a 200 would
+    # otherwise publish a much smaller list. The app's floor (1,000 rules)
+    # does not protect a first download.
+    lines = text.splitlines()
+    if len(lines) < MIN_PRIMARY_LINES and not allow_shrink:
+        raise SystemExit(f"[{list_id}] primary source has only {len(lines):,} lines "
+                         f"(floor {MIN_PRIMARY_LINES:,}); refusing to build")
+    buckets, stats, runtime = abp2safari.convert(lines)
 
     # Supplementary sources (regional lists, Peter Lowe's). Their exceptions
     # ride along too — regional lists whitelist sites their rules would break.
@@ -137,7 +186,9 @@ def build(list_id, spec, cache_dir):
         sup_text = fetch(supplement["urls"], cache_dir, name=supplement["name"], optional=True)
         if sup_text is None:
             continue
-        sup_buckets, _ = abp2safari.convert(sup_text.splitlines())
+        sup_buckets, _, sup_runtime = abp2safari.convert(sup_text.splitlines())
+        for key in runtime:
+            runtime[key].extend(sup_runtime[key])
         kept = 0
         for bucket_name, rules in sup_buckets.items():
             if bucket_name == "network":
@@ -152,15 +203,24 @@ def build(list_id, spec, cache_dir):
     buckets["network"] = extras + buckets["network"]
 
     rules = abp2safari.assemble(buckets, max_rules=spec["max_rules"])
+    problems = lint_rules(rules)
+    if problems:
+        raise SystemExit(f"[{list_id}] refusing to write a list that disables itself:\n  "
+                         + "\n  ".join(problems[:20]))
 
     out = spec.get("dist") or os.path.join(ROOT, spec["output"])
-    with open(out, "w") as f:
+    previous = previous_rule_count(out)
+    if previous and len(rules) < previous * MIN_KEPT_FRACTION and not allow_shrink:
+        raise SystemExit(f"[{list_id}] {len(rules):,} rules is under "
+                         f"{MIN_KEPT_FRACTION:.0%} of the previous {previous:,}; "
+                         "refusing to replace it (pass --allow-shrink if intended)")
+    with open(out, "w", encoding="utf-8") as f:
         json.dump(rules, f, separators=(",", ":"))
     size_mb = os.path.getsize(out) / 1e6
     print(f"  {out if spec.get('dist') else spec['output']}: {len(rules):,} rules ({size_mb:.1f} MB)")
     interesting = {k: v for k, v in stats.report().items() if v >= 50 or k.startswith("skip")}
     print(f"  stats: {interesting}")
-    return len(rules), host_only_domains(text)
+    return len(rules), host_only_domains(text), runtime
 
 
 def main():
@@ -168,6 +228,8 @@ def main():
     parser.add_argument("--cache", help="directory with pre-downloaded list .txt files")
     parser.add_argument("--dist", help="write <DIR>/<list>.json for the OTA rules repo "
                                        "instead of the app's bundled files")
+    parser.add_argument("--allow-shrink", action="store_true",
+                        help="accept a list under 70%% of the one it replaces")
     args = parser.parse_args()
 
     if args.dist:
@@ -178,17 +240,32 @@ def main():
 
     total = 0
     estimator_domains = {}
+    merged_runtime = {"procedural": [], "scriptlets": []}
     for list_id, spec in SOURCES.items():
-        count, domains = build(list_id, spec, args.cache)
+        count, domains, runtime = build(list_id, spec, args.cache, args.allow_shrink)
         total += count
         estimator_domains[list_id] = domains
-    if not args.dist:
+        for key in merged_runtime:
+            merged_runtime[key].extend(runtime[key])
+    if args.dist:
+        # The OTA rules repo publishes the runtime indexes alongside the
+        # blocker lists so the helper can eventually fetch them over the air.
+        generate_rules.write_cosmetics_js(
+            procedural=merged_runtime["procedural"],
+            scriptlets=merged_runtime["scriptlets"],
+            out_dir=args.dist,
+        )
+    else:
         generate_rules.write_blocklist_js(
             extra_ads=estimator_domains.get("ads", []),
             extra_trackers=estimator_domains.get("privacy", []),
         )
+        generate_rules.write_cosmetics_js(
+            procedural=merged_runtime["procedural"],
+            scriptlets=merged_runtime["scriptlets"],
+        )
     target = f"{args.dist}/*.json" if args.dist else "ContentBlockers/*/blockerList.json"
-    print(f"total: {total:,} rules — now run: swift tools/validate_rules.swift {target}")
+    print(f"total: {total:,} rules; now run: swift tools/validate_rules.swift --prune {target}")
 
 
 if __name__ == "__main__":

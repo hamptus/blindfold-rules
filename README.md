@@ -26,8 +26,14 @@ publishes only if WebKit's compiler accepts the output:
 
 ```sh
 python3 tools/build_lists.py --dist v1
-swift tools/validate_rules.swift v1/*.json   # macOS — uses WKContentRuleListStore
+swift tools/validate_rules.swift v1/*.json   # macOS, uses WKContentRuleListStore
 ```
+
+`tools/` is a copy of the converter in the Blindfold app repo, so the published
+lists and the lists bundled in the app come from the same code. `tools/SOURCE`
+records the commit it was copied from, and the workflow refuses to build when
+the files no longer match `tools/SOURCE.sha256`. Never edit `tools/` here;
+change it in the app repo and sync.
 
 ## Credits
 
