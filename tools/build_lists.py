@@ -138,13 +138,35 @@ SCOPING_KEYS = ("if-domain", "unless-domain", "if-top-url", "unless-top-url",
 MIN_UNSCOPED_EXCEPTION_FILTER = 8
 
 
+# Resource types a site-agnostic, match-everything block may cover: beacons
+# and pop-ups. Anything else (fetch, script, image...) blocked on every page
+# breaks the web.
+GLOBAL_BLOCK_OK_TYPES = {"ping", "other", "popup"}
+SITE_SCOPING_KEYS = ("if-domain", "unless-domain", "if-top-url", "unless-top-url")
+
+
 def lint_rules(rules):
-    """Rules that would silently disable a whole list. An `ignore-previous-rules`
-    with no scope and a match-everything url-filter cancels every earlier rule
-    on every page, and WebKit compiles it without complaint."""
+    """Rules that would silently disable a whole list, or break every site.
+    An `ignore-previous-rules` with no scope and a match-everything url-filter
+    cancels every earlier rule on every page, and WebKit compiles it without
+    complaint. A match-everything `block` with no site scope and a broad
+    resource type (`raw`, `fetch`, `script`...) blocks that kind of load on
+    every page: `*$ping,third-party` once compiled to third-party `raw`,
+    which is every cross-site fetch and XHR, and broke sign-in pages."""
     problems = []
     for index, rule in enumerate(rules):
-        if rule.get("action", {}).get("type") != "ignore-previous-rules":
+        action_type = rule.get("action", {}).get("type")
+        if action_type == "block":
+            trigger = rule.get("trigger", {})
+            if any(key in trigger for key in SITE_SCOPING_KEYS):
+                continue
+            if trigger.get("url-filter", "") not in (".*", "*", "^", ""):
+                continue
+            types = set(trigger.get("resource-type") or ["all"])
+            if not types <= GLOBAL_BLOCK_OK_TYPES:
+                problems.append(f"rule {index}: site-agnostic match-everything block {json.dumps(rule)}")
+            continue
+        if action_type != "ignore-previous-rules":
             continue
         trigger = rule.get("trigger", {})
         if any(key in trigger for key in SCOPING_KEYS):

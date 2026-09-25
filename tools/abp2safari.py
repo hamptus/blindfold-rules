@@ -25,24 +25,32 @@ from collections import defaultdict
 SEPARATOR = r"[^a-zA-Z0-9_.%-]"
 DOMAIN_PREFIX = r"^[a-z][a-z+.-]*://([^/:]+\.)?"
 
+# ABP type -> Safari types. Safari's legacy `raw` type is fetch + websocket +
+# ping + other at once, so `*$ping,third-party` (EasyPrivacy: third-party
+# beacons) mapped to raw blocked every cross-site fetch and XHR on every
+# page, which broke sign-in flows such as Apple's (idmsa.apple.com fetching
+# its SRP worker from appleid.cdn-apple.com). Each ABP type now gets only
+# the Safari types it means. WebKit files navigator.sendBeacon under
+# `other` and <a ping> under `ping`, so ABP's `ping` needs both (verified
+# against WKContentRuleList on WebKit 26).
 RESOURCE_TYPE_MAP = {
-    "script": "script",
-    "image": "image",
-    "stylesheet": "style-sheet",
-    "font": "font",
-    "media": "media",
-    "object": "raw",
-    "xmlhttprequest": "raw",
-    "websocket": "raw",
-    "ping": "raw",
-    "other": "raw",
-    "popup": "popup",
-    "subdocument": "document",
+    "script": ("script",),
+    "image": ("image",),
+    "stylesheet": ("style-sheet",),
+    "font": ("font",),
+    "media": ("media",),
+    "object": ("other",),
+    "xmlhttprequest": ("fetch",),
+    "websocket": ("websocket",),
+    "ping": ("ping", "other"),
+    "other": ("other",),
+    "popup": ("popup",),
+    "subdocument": ("document",),
 }
 # ABP's implicit type set for a negated-type rule. Excludes `document`: in
 # Safari that also matches top-level pages, so a `$~script` rule would block
 # navigating to the site itself.
-ALL_TYPES = sorted(set(RESOURCE_TYPE_MAP.values()) - {"popup", "document"})
+ALL_TYPES = sorted({t for types in RESOURCE_TYPE_MAP.values() for t in types} - {"popup", "document"})
 # First token of a `$` tail that looks like an option list. A tail that starts
 # like this but fails the option grammar ($csp=... 'self', $removeparam=/re/)
 # is an option we cannot parse, not part of the URL pattern.
@@ -302,11 +310,11 @@ def parse_network(line, stats):
         elif name == "subdocument":
             subdocument = True
         elif name in RESOURCE_TYPE_MAP:
-            resource_types.append(RESOURCE_TYPE_MAP[name])
+            resource_types.extend(RESOURCE_TYPE_MAP[name])
         elif name.startswith("~") and name[1:] in RESOURCE_TYPE_MAP:
             # Accumulate: `$~script,~stylesheet` excludes both, not just the
             # last one (the Swift compiler was fixed the same way).
-            excluded_types.add(RESOURCE_TYPE_MAP[name[1:]])
+            excluded_types.update(RESOURCE_TYPE_MAP[name[1:]])
         elif name in ("document", "doc") and not is_exception:
             resource_types.append("document")
         else:
