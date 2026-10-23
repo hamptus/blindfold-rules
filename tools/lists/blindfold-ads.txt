@@ -58,6 +58,12 @@ abcnews.go.com##div[data-box-type^="fitt-adbox-"]
 ! <div data-widget-type="ads" id="ads-lightbox2"> holding only an empty
 ! #bdx_static-lightbox2; site CSS reserves 250 to 350 px for it.
 techradar.com,tomsguide.com##div[data-widget-type="ads"]
+! Homepage listing grid: an ad cell is <div class="listingResult small result2">
+! holding only <div class="sponsored-post"><div></div></div>. EasyList hides the
+! inner div, which leaves the grid cell (about 297x404 on tomshardware.com)
+! empty. Same technique as AdGuard's tomshardware/techradar rules; :only-child
+! keeps a real story that also carries a sponsored-post child.
+tomshardware.com,techradar.com,tomsguide.com,gamesradar.com##.listingResult:has(> .sponsored-post:only-child)
 
 ! --- Reuters ----------------------------------------------------------------------
 ! Class names as Safari rendered them (CSS-module prefixes; the page is behind a
@@ -65,3 +71,15 @@ techradar.com,tomsguide.com##div[data-widget-type="ads"]
 ! right-column story-cluster item.
 reuters.com##div[class*="leaderboard-space-module__lead"]
 reuters.com##li[class*="story-cluster-module__ad-reser"]
+
+! --- Dailymotion ------------------------------------------------------------------
+! 500 ms after render the app checks a bait <div class="ad_box">: if EasyList's
+! generic .ad_box rule collapsed it, it shows the "Ad blocker detected" popin over
+! the page. The timer's callback calls adBlockerDetection(); defuse that timer
+! (AdGuard does the same).
+dailymotion.com#%#//scriptlet('prevent-setTimeout', 'adBlockerDetection')
+
+! --- The VG Resource (Spriters Resource) ------------------------------------------
+! <div class="ad-banner"> keeps min-height 90 px around the leaderboard slot,
+! empty once the ad is blocked.
+spriters-resource.com##.ad-banner

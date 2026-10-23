@@ -1,0 +1,12 @@
+! Title: Blindfold annoyance rules
+! Blindfold's own fixes for the Annoyances content blocker, merged by
+! tools/build_lists.py after Fanboy's Annoyance list and AdGuard Annoyances.
+! An exception here only cancels blocks in the Annoyances list.
+
+! --- CBS Sports video (Ketch consent manager) -------------------------------------
+! The video pages' player (avia) starts only after the Ketch consent manager
+! loads from global.ketchcdn.com. AdGuard Annoyances blocks that host as a
+! cookie notice and excepts only cbs.com and cbsnews.com, so on cbssports.com
+! every /watch/ video page showed its poster and never built a player
+! (Safari sitecheck 2026-10-23: 0 video elements, Baseline and AdGuard 3).
+@@||global.ketchcdn.com^$domain=cbssports.com

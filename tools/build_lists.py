@@ -78,6 +78,9 @@ SOURCES = {
             "name": "peterlowe",
             "urls": ["https://pgl.yoyo.org/adservers/serverlist.php?hostformat=adblockplus&showintro=0&mimetype=plaintext"],
         }],
+        # Blindfold's own fixes for this blocker. An exception only cancels
+        # blocks in its own content blocker, so Privacy fixes live here.
+        "local": ["blindfold-privacy.txt"],
         "max_rules": 145_000,
         "output": "ContentBlockers/Privacy/blockerList.json",
     },
@@ -94,6 +97,7 @@ SOURCES = {
             "name": "adguard_annoyances",
             "urls": ["https://filters.adtidy.org/extension/ublock/filters/14.txt"],
         }],
+        "local": ["blindfold-annoyances.txt"],
         "max_rules": 95_000,
         "output": "ContentBlockers/Annoyances/blockerList.json",
     },

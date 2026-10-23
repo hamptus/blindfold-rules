@@ -1,0 +1,13 @@
+! Title: Blindfold privacy rules
+! Blindfold's own fixes for the Privacy content blocker, merged by
+! tools/build_lists.py after EasyPrivacy and Peter Lowe's list. An exception
+! here only cancels blocks in the Privacy list; fixes for the Ads or
+! Annoyances blockers go in their own files.
+
+! --- CBS Sports video (Tealium) ------------------------------------------------
+! Peter Lowe's list blocks all of tags.tiqcdn.com. CBS Sports' /watch/ video
+! pages build their player only after the site's Tealium container
+! (utag.js) has loaded; with it blocked the page shows the poster and no
+! player. Only CBS Sports' own container path, only on cbssports.com: the
+! trackers that container loads stay blocked by their own rules.
+@@||tags.tiqcdn.com/utag/cbsi/cbssportssite/$script,domain=cbssports.com
