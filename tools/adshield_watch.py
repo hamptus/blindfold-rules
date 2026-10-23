@@ -108,6 +108,8 @@ VENDOR_MARKERS = {
     "last-bfa-at": re.compile(r"last_bfa_at"),
 }
 
+MARKER_NAMES = set(VENDOR_MARKERS) | {"permutation-decoder", "eval-call", "data-sdk"}
+
 # A script that is Next.js's serialized copy of the page (RSC flight data).
 FLIGHT_RE = re.compile(r"^\s*self\.__next_f\.push")
 FLIGHT_WINDOW = 20_000
@@ -137,8 +139,23 @@ def reg_domain(host):
 
 def host_covered(host, hosts):
     """True when host is one of hosts or a subdomain of one."""
+    if not host:
+        return False
     host = host.lower()
     return any(host == h or host.endswith("." + h) for h in hosts)
+
+
+VALID_HOST_RE = re.compile(r"^[a-z0-9.-]{1,253}$")
+
+
+def clean_host(host):
+    """A page-derived host, lowercased, or None when it is not a plain DNS
+    name. Everything page-derived that reaches the report or the issue goes
+    through here, so a page cannot smuggle text in as a "host"."""
+    if not isinstance(host, str):
+        return None
+    host = host.strip().lower().rstrip(".")
+    return host if VALID_HOST_RE.match(host) and "." in host else None
 
 
 def hosts_in_text(text):
@@ -152,8 +169,12 @@ def hosts_in_text(text):
 
 
 def url_hosts(text):
-    return {m.group(1).lower() for m in URL_HOST_RE.finditer(text)
-            if m.group(1).rsplit(".", 1)[-1].lower() not in NOT_TLDS}
+    hosts = set()
+    for m in URL_HOST_RE.finditer(text):
+        host = clean_host(m.group(1))
+        if host and host.rsplit(".", 1)[-1] not in NOT_TLDS:
+            hosts.add(host)
+    return hosts
 
 
 # --- rules ------------------------------------------------------------------
@@ -349,8 +370,19 @@ def script_src_host(src, page_host):
         return None
     if src.startswith("//"):
         src = "https:" + src
-    parsed = urllib.parse.urlparse(src)
-    return (parsed.hostname or page_host or "").lower() or None
+    try:
+        host = urllib.parse.urlparse(src).hostname
+    except ValueError:  # e.g. "http://[::1"
+        return None
+    return clean_host(host or page_host)
+
+
+def url_host(url):
+    """Validated host of a URL, or None (malformed URLs included)."""
+    try:
+        return clean_host(urllib.parse.urlparse(url or "").hostname)
+    except ValueError:
+        return None
 
 
 def vendor_markers(text):
@@ -368,8 +400,11 @@ def rule_needle_hits(text, rules, host):
         if seed in text:
             hits.add(seed)
     for _, _, needle in rules.inline_rules(host):
-        for match in needle_matcher(needle).finditer(text):
-            hits.add(match.group(0))
+        if needle_matcher(needle).search(text):
+            hits.add(needle)
+        for alt in needle_alternatives(needle):
+            if alt != needle and needle_matcher("/" + alt + "/").search(text):
+                hits.add(alt)
     return sorted(hits)
 
 
@@ -464,7 +499,7 @@ def extract_signatures(page_html, page_host, rules):
 def analyze_page(rule_domain, url, page_html, rules, final_url=None):
     """Signatures and drift for one fetched page."""
     final_url = final_url or url
-    page_host = (urllib.parse.urlparse(final_url).hostname or "").lower()
+    page_host = url_host(final_url) or url_host(url) or rule_domain
     signatures, other_handlers = extract_signatures(page_html, page_host, rules)
     drift = []
 
@@ -483,10 +518,10 @@ def analyze_page(rule_domain, url, page_html, rules, final_url=None):
             continue
         if not host_covered(sig["src_host"], block_hosts):
             drift.append({"kind": "loader_not_blocked",
-                          "detail": f"loader {sig['src_host']} is not blocked on {page_host}"})
+                          "detail": f"loader {sig['src_host'] or '(unparseable src)'} is not blocked on {page_host}"})
         if sig["handlers"] and not any(needle_matcher(n).search(sig["src"]) for n in mute_needles):
             drift.append({"kind": "fallback_not_muted",
-                          "detail": f"{'/'.join(sig['handlers'])} on the {sig['src_host']} tag is not muted"})
+                          "detail": f"{'/'.join(sig['handlers'])} on the {sig['src_host'] or '(unparseable src)'} tag is not muted"})
 
     inline = [s for s in signatures if s["kind"] == "inline_script"]
     inline_rules = rules.inline_rules(page_host)
@@ -496,16 +531,14 @@ def analyze_page(rule_domain, url, page_html, rules, final_url=None):
             drift.append({"kind": "inline_loader_unhandled",
                           "detail": "inline Ad Shield script on a site with no inline rule"})
         for text, name, needle in inline_rules:
-            matcher = needle_matcher(needle)
-            if not any(any(matcher.search(n) for n in s["rule_needles"]) for s in inline):
+            if not any(needle in s["rule_needles"] for s in inline):
                 drift.append({"kind": "inline_needle_missing",
                               "detail": f"{name} needle {needle} matches no inline Ad Shield script",
                               "rule": text[:200]})
     page_needles = {n for s in signatures for n in s["rule_needles"]}
     for _, _, needle in inline_rules:
         for alt in needle_alternatives(needle):
-            if not any(needle_matcher("/" + alt + "/" if needle.startswith("/") else alt).search(n)
-                       for n in page_needles):
+            if alt not in page_needles:
                 absent.add(alt)
 
     unknown = {}
@@ -534,16 +567,24 @@ def analyze_page(rule_domain, url, page_html, rules, final_url=None):
 
 # --- fetching ---------------------------------------------------------------
 
-def decode_body(raw, encoding):
-    encoding = (encoding or "").lower()
-    if encoding == "gzip":
-        raw = gzip.decompress(raw)
+def bounded_decompress(raw, wbits, max_bytes):
+    """At most max_bytes of decompressed output, however small the input."""
+    decompressor = zlib.decompressobj(wbits)
+    return decompressor.decompress(raw, max_bytes)
+
+
+def decode_body(raw, encoding, max_bytes=8_000_000):
+    """Body text, never more than max_bytes decoded bytes (a gzip bomb only
+    yields its first max_bytes)."""
+    encoding = (encoding or "").strip().lower()
+    if encoding in ("gzip", "x-gzip"):
+        raw = bounded_decompress(raw, 16 + zlib.MAX_WBITS, max_bytes)
     elif encoding == "deflate":
         try:
-            raw = zlib.decompress(raw)
+            raw = bounded_decompress(raw, zlib.MAX_WBITS, max_bytes)
         except zlib.error:
-            raw = zlib.decompress(raw, -zlib.MAX_WBITS)
-    return raw.decode("utf-8", errors="replace")
+            raw = bounded_decompress(raw, -zlib.MAX_WBITS, max_bytes)
+    return raw[:max_bytes].decode("utf-8", errors="replace")
 
 
 def fetch(url, timeout=25, attempts=3, max_bytes=8_000_000):
@@ -565,7 +606,7 @@ def fetch(url, timeout=25, attempts=3, max_bytes=8_000_000):
                 result["status"] = response.status
                 result["final_url"] = safe_text(response.geturl(), 500)
                 raw = response.read(max_bytes + 1)
-                body = decode_body(raw[:max_bytes], response.headers.get("Content-Encoding"))
+                body = decode_body(raw[:max_bytes], response.headers.get("Content-Encoding"), max_bytes)
                 result["error"] = None
                 break
         except urllib.error.HTTPError as error:
@@ -574,7 +615,7 @@ def fetch(url, timeout=25, attempts=3, max_bytes=8_000_000):
             if error.code == 404:
                 break
         except Exception as error:  # timeouts, resets, DNS, bad gzip
-            result["error"] = f"{type(error).__name__}: {error}"[:300]
+            result["error"] = f"{type(error).__name__}: {safe_text(str(error), 200)}"
         if attempt < attempts:
             time.sleep(2 * attempt)
     if body is not None:
@@ -613,16 +654,27 @@ def run(rules, fetcher, only=None, workers=8, timeout=25):
         pages = [(d, u) for d, u in pages
                  if d in wanted or (urllib.parse.urlparse(u).hostname or "") in wanted]
 
+    empty = {"signatures": [], "unknown_hosts": [], "other_handler_scripts": [],
+             "rule_needles_absent": [], "drift": [], "analysis_error": None}
+
     def one(item):
         rule_domain, url = item
-        fetch_result, body = fetcher(url, timeout=timeout)
-        entry = {"site": urllib.parse.urlparse(url).hostname, "rule_domain": rule_domain,
-                 "url": url, "fetch": fetch_result}
-        if body is None:
-            entry.update({"signatures": [], "unknown_hosts": [], "other_handler_scripts": [],
-                          "rule_needles_absent": [], "drift": []})
-        else:
-            entry.update(analyze_page(rule_domain, url, body, rules, fetch_result.get("final_url")))
+        entry = {"site": url_host(url) or rule_domain, "rule_domain": rule_domain, "url": url}
+        entry.update(empty)
+        # One bad page (odd markup, a parser corner case, a fetcher bug) is
+        # recorded on that page and never aborts the run.
+        try:
+            fetch_result, body = fetcher(url, timeout=timeout)
+        except Exception as error:
+            fetch_result, body = ({"ok": False, "status": None, "final_url": None, "bytes": 0,
+                                   "attempts": 0, "challenge": False,
+                                   "error": f"fetcher crashed: {type(error).__name__}"}, None)
+        entry["fetch"] = fetch_result
+        if body is not None:
+            try:
+                entry.update(analyze_page(rule_domain, url, body, rules, fetch_result.get("final_url")))
+            except Exception as error:
+                entry["analysis_error"] = type(error).__name__
         return entry
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
@@ -651,6 +703,7 @@ def run(rules, fetcher, only=None, workers=8, timeout=25):
             "pages": len(sites),
             "fetched_ok": sum(1 for s in sites if s["fetch"]["ok"]),
             "fetch_failed": sorted(s["site"] for s in sites if not s["fetch"]["ok"]),
+            "analysis_errors": sorted(s["site"] for s in sites if s["analysis_error"]),
             "with_signature": sum(1 for s in sites if s["signatures"]),
             "drift_sites": sorted({i["site"] for i in drift_items}),
             "drift_kinds": sorted({i["kind"] for i in drift_items}),
@@ -671,8 +724,57 @@ def issue_evidence(report):
         "generated_at": report["generated_at"],
         "summary": report["summary"],
         "drift_items": report["drift_items"],
-        "sites": [s for s in report["sites"] if s["site"] in drift_sites],
+        "sites": [issue_site(s) for s in report["sites"] if s["site"] in drift_sites],
     }
+
+
+def _hosts(values):
+    return sorted({h for h in (clean_host(v) for v in values or []) if h})
+
+
+def issue_site(site):
+    """A site entry rebuilt from validated fields only: hosts that pass
+    clean_host, rule-derived strings, the watcher's own marker names, and
+    numbers. No src, id, URL path or other page text reaches the issue, which
+    an agent reads and acts on."""
+    fetch = site.get("fetch") or {}
+    signatures = []
+    for sig in site.get("signatures", []):
+        sdk = sig.get("data_sdk")
+        sdks = [sdk] if isinstance(sdk, str) else list(sdk or [])
+        signatures.append({
+            "kind": sig.get("kind"),
+            "src_host": clean_host(sig.get("src_host")),
+            "handlers": [h for h in sig.get("handlers", []) if h in ("onerror", "onload")],
+            "data_sdk": [v for v in sdks if SDK_ATTR_RE.match(v or "")],
+            "markers": sorted(set(sig.get("markers", [])) & MARKER_NAMES),
+            "rule_needles": sig.get("rule_needles", []),
+            "hosts": _hosts(sig.get("hosts")),
+            "bytes": sig.get("bytes") or sig.get("handler_bytes"),
+            "flight_copy": sig.get("flight_copy"),
+        })
+    error = fetch.get("error")
+    return {
+        "site": clean_host(site.get("site")),
+        "rule_domain": site.get("rule_domain"),
+        "fetch": {"ok": bool(fetch.get("ok")), "status": fetch.get("status"),
+                  "final_host": url_host(fetch.get("final_url")),
+                  "attempts": fetch.get("attempts"), "bytes": fetch.get("bytes"),
+                  "challenge": bool(fetch.get("challenge")),
+                  "error": error.split(":", 1)[0] if isinstance(error, str) else None},
+        "analysis_error": site.get("analysis_error"),
+        "signatures": signatures,
+        "unknown_hosts": _hosts(site.get("unknown_hosts")),
+        "other_handler_hosts": _hosts(o.get("src_host") for o in site.get("other_handler_scripts", [])),
+        "rule_needles_absent": site.get("rule_needles_absent", []),
+        "drift": site.get("drift", []),
+    }
+
+
+def code_fence(text):
+    """A backtick fence longer than any backtick run inside text."""
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    return "`" * max(3, longest + 1)
 
 
 def human_summary(report):
@@ -719,7 +821,7 @@ def issue_body(report, run_url=None):
     blob = json.dumps(evidence, indent=1, sort_keys=True)
     budget = ISSUE_BODY_LIMIT - len("\n".join(head)) - 200
     if len(blob) > budget:
-        evidence["sites"] = [{k: v for k, v in s.items() if k != "other_handler_scripts"}
+        evidence["sites"] = [{k: v for k, v in s.items() if k != "other_handler_hosts"}
                              for s in evidence["sites"]]
         for site in evidence["sites"]:
             for sig in site["signatures"]:
@@ -729,7 +831,8 @@ def issue_body(report, run_url=None):
         evidence.pop("sites")
         evidence["truncated"] = "site entries dropped to fit; see the run artifact"
         blob = json.dumps(evidence, indent=1, sort_keys=True)
-    return "\n".join(head + ["```json", blob, "```", ""])
+    fence = code_fence(blob)
+    return "\n".join(head + [fence + "json", blob, fence, ""])
 
 
 def main(argv=None):
