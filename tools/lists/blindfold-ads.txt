@@ -14,7 +14,7 @@
 ! beforeInteractive script, written into a <script> element through innerHTML
 ! (seen in headless WebKit on www and news.yahoo.com; prevent-innerHTML alone
 ! stops one of the two loader writes there).
-yahoo.com,techradar.com,tomsguide.com,tomshardware.com,gamesradar.com,space.com,t3.com,whathifi.com,creativebloq.com,androidcentral.com,windowscentral.com,imore.com,laptopmag.com,cinemablend.com,loudersound.com,guitarworld.com,digitalcameraworld.com,cyclingnews.com,cyclingweekly.com,bikeperfect.com,fourfourtwo.com,whattowatch.com,itpro.com,kiplinger.com,theweek.co.uk,moneyweek.com,homesandgardens.com,livingetc.com,idealhome.co.uk,womanandhome.com,marieclaire.co.uk,wallpaper.com,decanter.com,fitandwell.com,advnture.com#%#//scriptlet('abort-current-inline-script', 'document.createElement', '/html-load\.com|error-report\.com|if\(await eval/')
+yahoo.com,techradar.com,tomsguide.com,tomshardware.com,gamesradar.com,space.com,t3.com,whathifi.com,creativebloq.com,androidcentral.com,windowscentral.com,imore.com,laptopmag.com,cinemablend.com,loudersound.com,guitarworld.com,digitalcameraworld.com,cyclingnews.com,cyclingweekly.com,bikeperfect.com,fourfourtwo.com,whattowatch.com,itpro.com,kiplinger.com,theweek.co.uk,theweek.com,moneyweek.com,homesandgardens.com,livingetc.com,idealhome.co.uk,womanandhome.com,marieclaire.co.uk,decanter.com,fitandwell.com,advnture.com#%#//scriptlet('abort-current-inline-script', 'document.createElement', '/html-load\.com|error-report\.com|if\(await eval/')
 yahoo.com#%#//scriptlet('prevent-innerHTML', 'script', 'error-report')
 ! Future plc pages load Ad Shield from a static <script src="https://html-load.com/
 ! themeBundle/..."> tag. Once it runs it renames the page's classes in the DOM
@@ -24,8 +24,15 @@ yahoo.com#%#//scriptlet('prevent-innerHTML', 'script', 'error-report')
 ! and the sponsored-post list items stayed). Blocking html-load.com sends the
 ! tag's onerror to rotating fallback hosts (vein.oofadvanced.com and others), so
 ! that handler is muted too; with both, the page keeps its own class names.
-||html-load.com^$domain=techradar.com|tomsguide.com|tomshardware.com|gamesradar.com|space.com|t3.com|whathifi.com|creativebloq.com|androidcentral.com|windowscentral.com|imore.com|laptopmag.com|cinemablend.com|loudersound.com|guitarworld.com|digitalcameraworld.com|cyclingnews.com|cyclingweekly.com|bikeperfect.com|fourfourtwo.com|whattowatch.com|itpro.com|kiplinger.com|theweek.co.uk|moneyweek.com|homesandgardens.com|livingetc.com|idealhome.co.uk|womanandhome.com|marieclaire.co.uk|wallpaper.com|decanter.com|fitandwell.com|advnture.com
-techradar.com,tomsguide.com,tomshardware.com,gamesradar.com,space.com,t3.com,whathifi.com,creativebloq.com,androidcentral.com,windowscentral.com,imore.com,laptopmag.com,cinemablend.com,loudersound.com,guitarworld.com,digitalcameraworld.com,cyclingnews.com,cyclingweekly.com,bikeperfect.com,fourfourtwo.com,whattowatch.com,itpro.com,kiplinger.com,theweek.co.uk,moneyweek.com,homesandgardens.com,livingetc.com,idealhome.co.uk,womanandhome.com,marieclaire.co.uk,wallpaper.com,decanter.com,fitandwell.com,advnture.com#%#//scriptlet('mute-script-events', 'html-load.com')
+||html-load.com^$domain=techradar.com|tomsguide.com|tomshardware.com|gamesradar.com|space.com|t3.com|whathifi.com|creativebloq.com|androidcentral.com|windowscentral.com|imore.com|laptopmag.com|cinemablend.com|loudersound.com|guitarworld.com|digitalcameraworld.com|cyclingnews.com|cyclingweekly.com|bikeperfect.com|fourfourtwo.com|whattowatch.com|itpro.com|kiplinger.com|theweek.co.uk|theweek.com|moneyweek.com|homesandgardens.com|livingetc.com|idealhome.co.uk|womanandhome.com|marieclaire.co.uk|decanter.com|fitandwell.com|advnture.com
+techradar.com,tomsguide.com,tomshardware.com,gamesradar.com,space.com,t3.com,whathifi.com,creativebloq.com,androidcentral.com,windowscentral.com,imore.com,laptopmag.com,cinemablend.com,loudersound.com,guitarworld.com,digitalcameraworld.com,cyclingnews.com,cyclingweekly.com,bikeperfect.com,fourfourtwo.com,whattowatch.com,itpro.com,kiplinger.com,theweek.co.uk,theweek.com,moneyweek.com,homesandgardens.com,livingetc.com,idealhome.co.uk,womanandhome.com,marieclaire.co.uk,decanter.com,fitandwell.com,advnture.com#%#//scriptlet('mute-script-events', 'html-load.com')
+
+! theweek.co.uk now redirects to theweek.com, which loads the same html-load.com
+! loader. wallpaper.com dropped: no Ad Shield in its pages as of 2026-10-23.
+! Yahoo loader as of 2026-10-23: the inline script injects Ad Shield from
+! Yahoo's own CDN (s.yimg.com/du/site/<random>.js). The script still names
+! report.error-report.com, so the inline-script abort above still matches it
+! (Safari sitecheck 2026-10-23: no ads, no empty slots on www, news, finance, sports).
 
 ! --- Yahoo (www and news; the markup below was checked on those two) ------------
 ! Billboard: <div class="cls-ad-top-center ... md:min-h-[250px]"> holding
