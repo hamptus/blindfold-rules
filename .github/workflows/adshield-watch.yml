@@ -1,0 +1,73 @@
+name: Ad Shield drift watch
+
+# Fetches the pages Ad Shield runs on (Yahoo and the Future plc sites named in
+# tools/lists/blindfold-ads.txt) and compares the loader signatures in the raw
+# HTML with what the rules know. See README.md, "Ad Shield drift".
+
+on:
+  schedule:
+    - cron: "30 6 * * *"   # daily, after the 06:00 list build
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: adshield-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Watcher unit tests
+        run: python3 -m unittest discover -s tools -p 'test_adshield_watch.py'
+
+      # Exits 0 whether or not there is drift; it sets the "drift" output.
+      # Fetch failures are in the report but are not drift on their own.
+      - name: Check the watched pages
+        id: watch
+        run: python3 tools/adshield_watch.py --out adshield-report.json --issue-body adshield-issue.md
+
+      - name: Keep the full report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: adshield-report
+          path: |
+            adshield-report.json
+            adshield-issue.md
+          if-no-files-found: ignore
+          retention-days: 30
+
+      # One open issue at a time: the first drift opens it, later drift days
+      # comment on it. Nothing here closes it; a person does, after the fix.
+      - name: Open or update the drift issue
+        if: steps.watch.outputs.drift == 'true'
+        run: |
+          OPEN=$(gh issue list --label adshield-drift --state open --json number --jq '.[0].number')
+          if [ -n "$OPEN" ]; then
+            gh issue comment "$OPEN" --body-file adshield-issue.md
+          else
+            gh label create adshield-drift --color D93F0B \
+              --description "Ad Shield changed in a way the rules do not cover" 2>/dev/null || true
+            gh issue create --label adshield-drift \
+              --title "Ad Shield drift detected" \
+              --body-file adshield-issue.md
+          fi
+
+      - name: Note a clean day on the open issue
+        if: steps.watch.outputs.drift == 'false'
+        run: |
+          OPEN=$(gh issue list --label adshield-drift --state open --json number --jq '.[0].number')
+          if [ -n "$OPEN" ]; then
+            SUMMARY=$(python3 -c "import json; s = json.load(open('adshield-report.json'))['summary']; print(f\"{s['fetched_ok']} of {s['pages']} pages fetched, {s['with_signature']} with an Ad Shield signature, fetch failures: {', '.join(s['fetch_failed']) or 'none'}.\")")
+            gh issue comment "$OPEN" --body "No drift today ($(date -u +%Y-%m-%d)). $SUMMARY Run: $RUN_URL"
+          fi
