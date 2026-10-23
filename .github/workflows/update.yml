@@ -4,10 +4,27 @@ on:
   schedule:
     - cron: "0 6 * * *"   # daily; EasyList expects refreshes every ~4 days
   workflow_dispatch:
+  # A hotfix (tools/lists/hotfix-ads.txt) or a list sync merged to main
+  # publishes right away instead of waiting for the next daily run.
+  push:
+    branches: [main]
+    paths:
+      - "tools/lists/**"
+  # Pull requests that change the lists get the same build and WebKit
+  # validation, and nothing is committed or pushed.
+  pull_request:
+    paths:
+      - "tools/lists/**"
 
 permissions:
   contents: write
   issues: write
+
+# Publishing runs (schedule, dispatch, push) queue behind each other so two
+# of them never race to push v1/; each pull request gets its own group.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'publish' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -19,8 +36,19 @@ jobs:
       # tools/SOURCE). A hand edit here, or a partial sync, would silently
       # publish lists built by a different converter than the app ships, which
       # is how the published lists lost the June converter fixes.
+      # tools/lists/hotfix-ads.txt is owned by this repo and is deliberately
+      # not in SOURCE.sha256; the guard keeps a future sync from adding it.
       - name: Check tools match the recorded Blindfold sync
-        run: shasum -a 256 -c tools/SOURCE.sha256
+        run: |
+          if grep -q 'hotfix-ads.txt' tools/SOURCE.sha256; then
+            echo "tools/SOURCE.sha256 must not cover tools/lists/hotfix-ads.txt (this repo owns it)"
+            exit 1
+          fi
+          shasum -a 256 -c tools/SOURCE.sha256
+
+      - name: Ad Shield watcher tests (the watcher parses the lists)
+        if: github.event_name == 'pull_request'
+        run: python3 -m unittest discover -s tools -p 'test_adshield_watch.py'
 
       - name: Build lists from upstream sources
         run: python3 tools/build_lists.py --dist v1
@@ -29,6 +57,7 @@ jobs:
         run: swift tools/validate_rules.swift --prune v1/ads.json v1/privacy.json v1/annoyances.json
 
       - name: Commit and push if changed
+        if: github.event_name != 'pull_request'
         run: |
           git config user.name "blindfold-rules-bot"
           git config user.email "actions@users.noreply.github.com"
@@ -41,9 +70,10 @@ jobs:
           fi
 
       # A failed run otherwise just leaves the published lists stale with no
-      # signal. One open issue at a time; later failures comment on it.
+      # signal. One open issue at a time; later failures comment on it. A
+      # failed pull request check shows on the pull request instead.
       - name: Report failure
-        if: failure()
+        if: failure() && github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
