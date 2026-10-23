@@ -146,6 +146,11 @@ def host_covered(host, hosts):
 
 
 VALID_HOST_RE = re.compile(r"^[a-z0-9.-]{1,253}$")
+# A real DNS shape: 2 to 8 labels of at most 63 characters, no empty or
+# hyphen-edged labels, an all-letter TLD. Keeps a page from spelling words
+# out across many long labels ("ignore.previous.instructions...").
+DNS_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+TLD_RE = re.compile(r"^[a-z]{2,24}$")
 
 
 def clean_host(host):
@@ -155,7 +160,14 @@ def clean_host(host):
     if not isinstance(host, str):
         return None
     host = host.strip().lower().rstrip(".")
-    return host if VALID_HOST_RE.match(host) and "." in host else None
+    if not VALID_HOST_RE.match(host):
+        return None
+    labels = host.split(".")
+    if not 2 <= len(labels) <= 8 or not TLD_RE.match(labels[-1]):
+        return None
+    if not all(DNS_LABEL_RE.match(label) for label in labels):
+        return None
+    return host
 
 
 def hosts_in_text(text):
