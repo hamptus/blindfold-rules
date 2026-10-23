@@ -24,6 +24,14 @@ from collections import defaultdict
 
 SEPARATOR = r"[^a-zA-Z0-9_.%-]"
 DOMAIN_PREFIX = r"^[a-z][a-z+.-]*://([^/:]+\.)?"
+# What a match-everything pattern (`*`, `$ping,third-party` with no URL)
+# becomes: any URL with a network scheme. A bare `.*` also matched blob: and
+# data: URLs, and WebKit counts every blob: URL as third-party and loads blob
+# workers as `other`, so EasyPrivacy's `*$ping,third-party` blocked the blob
+# workers of Cloudflare's challenge and the page never left "Performing
+# security verification". `blob:https://...` cannot match this: the scheme
+# has to be followed by `://`.
+NETWORK_URL_FILTER = r"^[a-z][a-z+.-]*://"
 
 # ABP type -> Safari types. Safari's legacy `raw` type is fetch + websocket +
 # ping + other at once, so `*$ping,third-party` (EasyPrivacy: third-party
@@ -94,6 +102,8 @@ SUPPORTED_SCRIPTLETS = {
     "set-cookie", "set-cookie-reload",
     "set-local-storage-item", "set-session-storage-item",
     "addEventListener-defuser", "adjust-setInterval", "adjust-setTimeout",
+    # Anti-adblock defusers (Ad Shield on Yahoo and Future plc sites).
+    "abort-current-inline-script", "abort-on-stack-trace", "prevent-innerHTML",
 }
 SCRIPTLET_ALIASES = {
     "set": "set-constant",
@@ -111,6 +121,19 @@ SCRIPTLET_ALIASES = {
     "nano-setInterval-booster": "adjust-setInterval",
     "nano-stb": "adjust-setTimeout",
     "nano-setTimeout-booster": "adjust-setTimeout",
+    # uBO's abort-current-script also matches external scripts; folding it
+    # onto the inline-only scriptlet makes such a rule narrower, never wider.
+    "acs": "abort-current-inline-script",
+    "acis": "abort-current-inline-script",
+    "abort-current-script": "abort-current-inline-script",
+    "aost": "abort-on-stack-trace",
+}
+# Scriptlets whose first N arguments must be non-empty. Without them
+# abort-on-stack-trace would throw for every caller of the property, and the
+# abort-* ones have nothing to wrap.
+REQUIRED_SCRIPTLET_ARGS = {
+    "abort-current-inline-script": 1,
+    "abort-on-stack-trace": 2,
 }
 ADGUARD_SCRIPTLET = re.compile(r"^//scriptlet\((.*)\)\s*$")
 
@@ -190,6 +213,8 @@ def url_filter_for(raw_pattern):
 
     if not pattern:
         return None
+    if not prefix and not suffix and set(pattern) == {"*"}:
+        return NETWORK_URL_FILTER
     # "||" anchors a DOMAIN; a pattern starting with "/" after it is either an
     # AdGuard regex hostname ("||/^….net$/^" — WebKit rejects mid-pattern
     # assertions, one bad rule kills the list) or a nonsensical empty-host
@@ -426,25 +451,56 @@ def normalize_scriptlet_name(name):
 
 
 def parse_scriptlet_args(body):
-    """Comma-separated scriptlet args; AdGuard quotes them, uBO doesn't.
-    Commas inside quoted strings (JSON values etc.) are not separators."""
-    parts, current, in_quote = [], [], None
-    for ch in body:
-        if in_quote:
-            current.append(ch)
-            if ch == in_quote:
-                in_quote = None
-        elif ch in ("'", '"'):
-            in_quote = ch
-            current.append(ch)
-        elif ch == ",":
-            parts.append("".join(current).strip())
-            current = []
-        else:
-            current.append(ch)
-    parts.append("".join(current).strip())
-    return [p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in "'\"" else p
-            for p in parts]
+    """Comma-separated scriptlet args. AdGuard quotes them, uBO doesn't.
+
+    A quoted argument is one that starts with a quote and whose matching
+    closing quote is followed only by whitespace and a comma (or the end);
+    inside it, commas are literal and a backslash-escaped quote is a quote.
+    Otherwise the quote is literal text (winiso.pl's needle starts with an
+    unclosed `'`). Unquoted, `\\,` is a literal comma (uBO)."""
+    parts = []
+    i, n = 0, len(body)
+    while True:
+        while i < n and body[i] in " \t":
+            i += 1
+        if i < n and body[i] in "'\"`":
+            quote, j, buf, end = body[i], i + 1, [], None
+            while j < n:
+                ch = body[j]
+                if ch == "\\" and j + 1 < n and body[j + 1] == quote:
+                    buf.append(quote)
+                    j += 2
+                    continue
+                if ch == quote:
+                    k = j + 1
+                    while k < n and body[k] in " \t":
+                        k += 1
+                    if k == n or body[k] == ",":
+                        end = k
+                        break
+                buf.append(ch)
+                j += 1
+            if end is not None:
+                parts.append("".join(buf))
+                if end >= n:
+                    return parts
+                i = end + 1
+                continue
+        buf = []
+        while i < n:
+            ch = body[i]
+            if ch == "\\" and i + 1 < n and body[i + 1] == ",":
+                buf.append(",")
+                i += 2
+                continue
+            if ch == ",":
+                break
+            buf.append(ch)
+            i += 1
+        parts.append("".join(buf).strip())
+        if i >= n:
+            return parts
+        i += 1
 
 
 def balanced_arg(text, start):
@@ -566,6 +622,15 @@ def convert(lines, stats=None):
         name = normalize_scriptlet_name(args[0])
         if name not in SUPPORTED_SCRIPTLETS:
             stats.skip("scriptlet-unsupported")
+            return
+        if name == "abort-current-inline-script" and len(args) > 3 and args[3]:
+            # uBO's third argument narrows the rule to a script context the
+            # runtime does not check; without it the rule would be broader.
+            stats.skip("scriptlet-context")
+            return
+        required = REQUIRED_SCRIPTLET_ARGS.get(name, 0)
+        if len(args) <= required or not all(args[1:required + 1]):
+            stats.skip("scriptlet-args")
             return
         if name == "set-constant":
             value = args[2] if len(args) > 2 else ""

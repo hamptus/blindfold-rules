@@ -1,0 +1,50 @@
+! Title: Blindfold ad rules
+! Written for Blindfold from the sites' own markup. Converted by
+! tools/abp2safari.py and merged into the Ads content blocker (cosmetic rules)
+! and the helper's runtime index (scriptlets) by tools/build_lists.py.
+!
+! Every cosmetic rule here is site-scoped, and prefers ids and data attributes
+! over class names: Ad Shield removes the classes a hide rule matched, and the
+! reserved box stays behind.
+
+! --- Ad Shield (html-load.com, error-report.com) --------------------------------
+! The anti-adblock loader strips matched ad classes and re-shows ads. It runs
+! as an inline script; aborting it when it reaches for document.createElement
+! stops it before it touches the page. On Yahoo the loader is a Next.js
+! beforeInteractive script, written into a <script> element through innerHTML
+! (seen in headless WebKit on www and news.yahoo.com; prevent-innerHTML alone
+! stops one of the two loader writes there).
+yahoo.com,techradar.com,tomsguide.com,tomshardware.com,gamesradar.com,space.com,t3.com,whathifi.com,creativebloq.com,androidcentral.com,windowscentral.com,imore.com,laptopmag.com,cinemablend.com,loudersound.com,guitarworld.com,digitalcameraworld.com,cyclingnews.com,cyclingweekly.com,bikeperfect.com,fourfourtwo.com,whattowatch.com,itpro.com,kiplinger.com,theweek.co.uk,moneyweek.com,homesandgardens.com,livingetc.com,idealhome.co.uk,womanandhome.com,marieclaire.co.uk,wallpaper.com,decanter.com,fitandwell.com,advnture.com#%#//scriptlet('abort-current-inline-script', 'document.createElement', '/html-load\.com|error-report\.com|if\(await eval/')
+yahoo.com#%#//scriptlet('prevent-innerHTML', 'script', 'error-report')
+
+! --- Yahoo (www and news; the markup below was checked on those two) ------------
+! Billboard: <div class="cls-ad-top-center ... md:min-h-[250px]"> holding
+! .ad-container boxes, each with an empty #top_center-<page>_<width>.
+www.yahoo.com,news.yahoo.com##div:has(> div > [id^="top_center-"])
+! Right rail top unit: <div class="cls-ad-rail flex"> > .ad-container > #top_right-*.
+www.yahoo.com,news.yahoo.com##div:has(> div > [id^="top_right-"])
+! Sticky rail: <div class="cls-ad-rail ad-container min-h-[607px]"> > div > #sda-*.
+! On news.yahoo.com the same #sda-* boxes share a sticky column with the
+! footer, which must stay.
+www.yahoo.com,news.yahoo.com##div:has(> div > [id^="sda-"]):not(:has(#footer))
+! Stream native ad: <li class="cls-stream-ad ..."> with skeleton boxes and an
+! empty #taboola-stream-fp-<n>.
+www.yahoo.com,news.yahoo.com##li:has(> [id^="taboola-stream-"])
+
+! --- ABC News --------------------------------------------------------------------
+! <div class="StickyAdWrapper"><div data-box-type="fitt-adbox-thinbannerhome">
+! <div class="Ad thinbannerhome ad-slot">; the classless wrapper kept 90 px.
+abcnews.go.com##.StickyAdWrapper
+abcnews.go.com##div[data-box-type^="fitt-adbox-"]
+
+! --- Future plc (TechRadar, Tom's Guide) ------------------------------------------
+! <div data-widget-type="ads" id="ads-lightbox2"> holding only an empty
+! #bdx_static-lightbox2; site CSS reserves 250 to 350 px for it.
+techradar.com,tomsguide.com##div[data-widget-type="ads"]
+
+! --- Reuters ----------------------------------------------------------------------
+! Class names as Safari rendered them (CSS-module prefixes; the page is behind a
+! bot wall for curl): the 250 px grey band above the masthead and the reserved
+! right-column story-cluster item.
+reuters.com##div[class*="leaderboard-space-module__lead"]
+reuters.com##li[class*="story-cluster-module__ad-reser"]

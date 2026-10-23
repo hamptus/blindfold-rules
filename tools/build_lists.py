@@ -61,6 +61,8 @@ SOURCES = {
         "urls": ["https://easylist.to/easylist/easylist.txt"],
         "extras": generate_rules.build_ads,
         "supplements": REGIONAL_LISTS,
+        # Blindfold's own rules (tools/lists), never capped or fetched.
+        "local": ["blindfold-ads.txt"],
         "max_rules": 145_000,
         "output": "ContentBlockers/Ads/blockerList.json",
     },
@@ -116,6 +118,15 @@ def fetch(urls, cache_dir, name=None, optional=False):
     raise SystemExit(f"failed to fetch {name}: {last_error}")
 
 
+LISTS_DIR = os.path.join(ROOT, "tools", "lists")
+
+
+def read_local_list(name):
+    """Lines of one of Blindfold's own filter lists in tools/lists."""
+    with open(os.path.join(LISTS_DIR, name), encoding="utf-8") as f:
+        return f.read().splitlines()
+
+
 HOST_ONLY = re.compile(r"^\|\|([a-z0-9][a-z0-9.-]*\.[a-z]{2,})\^$")
 MAX_ESTIMATOR_DOMAINS = 6000
 
@@ -142,6 +153,7 @@ MIN_UNSCOPED_EXCEPTION_FILTER = 8
 # and pop-ups. Anything else (fetch, script, image...) blocked on every page
 # breaks the web.
 GLOBAL_BLOCK_OK_TYPES = {"ping", "other", "popup"}
+MATCH_EVERYTHING_FILTERS = (".*", "*", "^", "", abp2safari.NETWORK_URL_FILTER)
 SITE_SCOPING_KEYS = ("if-domain", "unless-domain", "if-top-url", "unless-top-url")
 
 
@@ -160,11 +172,16 @@ def lint_rules(rules):
             trigger = rule.get("trigger", {})
             if any(key in trigger for key in SITE_SCOPING_KEYS):
                 continue
-            if trigger.get("url-filter", "") not in (".*", "*", "^", ""):
+            url_filter = trigger.get("url-filter", "")
+            if url_filter not in MATCH_EVERYTHING_FILTERS:
                 continue
             types = set(trigger.get("resource-type") or ["all"])
             if not types <= GLOBAL_BLOCK_OK_TYPES:
                 problems.append(f"rule {index}: site-agnostic match-everything block {json.dumps(rule)}")
+            elif url_filter != abp2safari.NETWORK_URL_FILTER:
+                # `.*` also matches blob: URLs, which WebKit treats as
+                # third-party `other`: it blocked Cloudflare's challenge workers.
+                problems.append(f"rule {index}: match-everything block also matches blob: URLs {json.dumps(rule)}")
             continue
         if action_type != "ignore-previous-rules":
             continue
@@ -218,6 +235,18 @@ def build(list_id, spec, cache_dir, allow_shrink=False):
             buckets[bucket_name].extend(rules)
             kept += len(rules)
         print(f"  + {supplement['name']}: {kept:,} rules")
+
+    for name in spec.get("local", []):
+        local_buckets, local_stats, local_runtime = abp2safari.convert(read_local_list(name))
+        skipped = {k: v for k, v in local_stats.report().items() if k.startswith("skip")}
+        if skipped:
+            raise SystemExit(f"[{list_id}] {name} has rules the converter skipped: {skipped}")
+        for key in runtime:
+            runtime[key].extend(local_runtime[key])
+        for bucket_name, rules in local_buckets.items():
+            buckets[bucket_name].extend(rules)
+        print(f"  + {name}: {sum(len(r) for r in local_buckets.values()):,} rules, "
+              f"{len(local_runtime['scriptlets'])} scriptlets")
 
     # Curated Blindfold rules ride in front of the standard list's network
     # block so list-level exceptions can still cancel them.
