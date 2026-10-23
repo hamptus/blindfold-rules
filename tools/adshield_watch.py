@@ -681,13 +681,16 @@ def human_summary(report):
              f"{s['with_signature']} with an Ad Shield signature, "
              f"{len(s['fetch_failed'])} fetch failures (not drift on their own)."]
     if s["sdk_versions"]:
+        lines.append("")
         lines.append(f"Ad Shield SDK versions seen: {', '.join(s['sdk_versions'])}.")
     if not report["drift"]:
+        lines.append("")
         lines.append("No drift.")
         return "\n".join(lines)
     by_kind = {}
     for item in report["drift_items"]:
         by_kind.setdefault(item["kind"], []).append(item)
+    lines.append("")
     lines.append(f"Drift on {len(s['drift_sites'])} pages (fingerprint {s['drift_fingerprint']}; "
                  "the same fingerprint as an earlier report means nothing changed):")
     lines.append("")
