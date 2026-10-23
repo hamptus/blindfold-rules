@@ -16,6 +16,16 @@
 ! stops one of the two loader writes there).
 yahoo.com,techradar.com,tomsguide.com,tomshardware.com,gamesradar.com,space.com,t3.com,whathifi.com,creativebloq.com,androidcentral.com,windowscentral.com,imore.com,laptopmag.com,cinemablend.com,loudersound.com,guitarworld.com,digitalcameraworld.com,cyclingnews.com,cyclingweekly.com,bikeperfect.com,fourfourtwo.com,whattowatch.com,itpro.com,kiplinger.com,theweek.co.uk,moneyweek.com,homesandgardens.com,livingetc.com,idealhome.co.uk,womanandhome.com,marieclaire.co.uk,wallpaper.com,decanter.com,fitandwell.com,advnture.com#%#//scriptlet('abort-current-inline-script', 'document.createElement', '/html-load\.com|error-report\.com|if\(await eval/')
 yahoo.com#%#//scriptlet('prevent-innerHTML', 'script', 'error-report')
+! Future plc pages load Ad Shield from a static <script src="https://html-load.com/
+! themeBundle/..."> tag. Once it runs it renames the page's classes in the DOM
+! (dfp-leaderboard-container becomes harzsgqwhv...) and serves the site CSS
+! rewritten to match, so no hide rule, generic or site, matches the ad boxes it
+! leaves (seen in a WKWebView with the Ads list compiled: the 980x250 leaderboard
+! and the sponsored-post list items stayed). Blocking html-load.com sends the
+! tag's onerror to rotating fallback hosts (vein.oofadvanced.com and others), so
+! that handler is muted too; with both, the page keeps its own class names.
+||html-load.com^$domain=techradar.com|tomsguide.com|tomshardware.com|gamesradar.com|space.com|t3.com|whathifi.com|creativebloq.com|androidcentral.com|windowscentral.com|imore.com|laptopmag.com|cinemablend.com|loudersound.com|guitarworld.com|digitalcameraworld.com|cyclingnews.com|cyclingweekly.com|bikeperfect.com|fourfourtwo.com|whattowatch.com|itpro.com|kiplinger.com|theweek.co.uk|moneyweek.com|homesandgardens.com|livingetc.com|idealhome.co.uk|womanandhome.com|marieclaire.co.uk|wallpaper.com|decanter.com|fitandwell.com|advnture.com
+techradar.com,tomsguide.com,tomshardware.com,gamesradar.com,space.com,t3.com,whathifi.com,creativebloq.com,androidcentral.com,windowscentral.com,imore.com,laptopmag.com,cinemablend.com,loudersound.com,guitarworld.com,digitalcameraworld.com,cyclingnews.com,cyclingweekly.com,bikeperfect.com,fourfourtwo.com,whattowatch.com,itpro.com,kiplinger.com,theweek.co.uk,moneyweek.com,homesandgardens.com,livingetc.com,idealhome.co.uk,womanandhome.com,marieclaire.co.uk,wallpaper.com,decanter.com,fitandwell.com,advnture.com#%#//scriptlet('mute-script-events', 'html-load.com')
 
 ! --- Yahoo (www and news; the markup below was checked on those two) ------------
 ! Billboard: <div class="cls-ad-top-center ... md:min-h-[250px]"> holding

@@ -1,0 +1,13 @@
+! Title: Blindfold ad hotfixes
+! Fast fixes for the Ads list, merged after blindfold-ads.txt by
+! tools/build_lists.py when this file exists (same converter, and the build
+! fails if the converter skips any rule here).
+!
+! This file is owned by the hamptus/blindfold-rules repo. Rules land there
+! through reviewed pull requests (for example after the daily Ad Shield drift
+! check opens an issue) and ship in the next over-the-air list build without an
+! app release. Each one is back-ported into blindfold-ads.txt in this repo
+! later, then removed from the rules repo copy. The rules repo's
+! tools/SOURCE.sha256 check deliberately does not cover this file.
+!
+! The copy in the app repo stays empty (comments only).

@@ -63,6 +63,10 @@ SOURCES = {
         "supplements": REGIONAL_LISTS,
         # Blindfold's own rules (tools/lists), never capped or fetched.
         "local": ["blindfold-ads.txt"],
+        # Fast fixes owned by the blindfold-rules repo (reviewed PRs there),
+        # merged when present and back-ported into blindfold-ads.txt later.
+        # Not covered by that repo's tools/SOURCE.sha256 check.
+        "local_optional": ["hotfix-ads.txt"],
         "max_rules": 145_000,
         "output": "ContentBlockers/Ads/blockerList.json",
     },
@@ -125,6 +129,31 @@ def read_local_list(name):
     """Lines of one of Blindfold's own filter lists in tools/lists."""
     with open(os.path.join(LISTS_DIR, name), encoding="utf-8") as f:
         return f.read().splitlines()
+
+
+def local_list_names(spec):
+    """The spec's required local lists, plus its optional ones that exist."""
+    names = list(spec.get("local", []))
+    names += [name for name in spec.get("local_optional", [])
+              if os.path.exists(os.path.join(LISTS_DIR, name))]
+    return names
+
+
+def merge_local_lists(list_id, spec, buckets, runtime):
+    """Converts and appends the spec's local lists. Any rule the converter
+    skips fails the build: a hand-written rule that silently vanished would
+    look shipped and not be."""
+    for name in local_list_names(spec):
+        local_buckets, local_stats, local_runtime = abp2safari.convert(read_local_list(name))
+        skipped = {k: v for k, v in local_stats.report().items() if k.startswith("skip")}
+        if skipped:
+            raise SystemExit(f"[{list_id}] {name} has rules the converter skipped: {skipped}")
+        for key in runtime:
+            runtime[key].extend(local_runtime[key])
+        for bucket_name, rules in local_buckets.items():
+            buckets[bucket_name].extend(rules)
+        print(f"  + {name}: {sum(len(r) for r in local_buckets.values()):,} rules, "
+              f"{len(local_runtime['scriptlets'])} scriptlets")
 
 
 HOST_ONLY = re.compile(r"^\|\|([a-z0-9][a-z0-9.-]*\.[a-z]{2,})\^$")
@@ -236,17 +265,7 @@ def build(list_id, spec, cache_dir, allow_shrink=False):
             kept += len(rules)
         print(f"  + {supplement['name']}: {kept:,} rules")
 
-    for name in spec.get("local", []):
-        local_buckets, local_stats, local_runtime = abp2safari.convert(read_local_list(name))
-        skipped = {k: v for k, v in local_stats.report().items() if k.startswith("skip")}
-        if skipped:
-            raise SystemExit(f"[{list_id}] {name} has rules the converter skipped: {skipped}")
-        for key in runtime:
-            runtime[key].extend(local_runtime[key])
-        for bucket_name, rules in local_buckets.items():
-            buckets[bucket_name].extend(rules)
-        print(f"  + {name}: {sum(len(r) for r in local_buckets.values()):,} rules, "
-              f"{len(local_runtime['scriptlets'])} scriptlets")
+    merge_local_lists(list_id, spec, buckets, runtime)
 
     # Curated Blindfold rules ride in front of the standard list's network
     # block so list-level exceptions can still cancel them.

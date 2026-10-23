@@ -104,6 +104,9 @@ SUPPORTED_SCRIPTLETS = {
     "addEventListener-defuser", "adjust-setInterval", "adjust-setTimeout",
     # Anti-adblock defusers (Ad Shield on Yahoo and Future plc sites).
     "abort-current-inline-script", "abort-on-stack-trace", "prevent-innerHTML",
+    # Blindfold's own: stops a loader script's error/load handlers (Ad Shield's
+    # fallback on Future plc sites lives in the loader tag's onerror).
+    "mute-script-events",
 }
 SCRIPTLET_ALIASES = {
     "set": "set-constant",
@@ -134,6 +137,7 @@ SCRIPTLET_ALIASES = {
 REQUIRED_SCRIPTLET_ARGS = {
     "abort-current-inline-script": 1,
     "abort-on-stack-trace": 2,
+    "mute-script-events": 1,
 }
 ADGUARD_SCRIPTLET = re.compile(r"^//scriptlet\((.*)\)\s*$")
 
