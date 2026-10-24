@@ -83,3 +83,7 @@ dailymotion.com#%#//scriptlet('prevent-setTimeout', 'adBlockerDetection')
 ! <div class="ad-banner"> keeps min-height 90 px around the leaderboard slot,
 ! empty once the ad is blocked.
 spriters-resource.com##.ad-banner
+
+! Future plc listing carousels: "Sponsor Content Created With <brand>" native
+! ad cards (wdn-listv2 items). Empty sponsored labels on ordinary cards are left alone.
+techradar.com,tomsguide.com,tomshardware.com,gamesradar.com#?#.listing__text--sponsored:has-text(/^\s*Sponsor(ed)? Content/i):upward(li.wdn-listv2-item)

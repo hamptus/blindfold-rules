@@ -11,3 +11,14 @@
 ! player. Only CBS Sports' own container path, only on cbssports.com: the
 ! trackers that container loads stay blocked by their own rules.
 @@||tags.tiqcdn.com/utag/cbsi/cbssportssite/$script,domain=cbssports.com
+
+! --- CBS Sports live (Google DAI stream) -------------------------------------
+! /watch/live (CBS Sports HQ) is a Google Dynamic Ad Insertion stream: the
+! IMA DAI SDK creates the stream with a fetch to
+! pubads.g.doubleclick.net/ssai/event/<asset>/streams, and the HLS playlists
+! it returns are the only source the player gets. Peter Lowe's list blocks all
+! of doubleclick.net; EasyList's @@||pubads.g.doubleclick.net/ssai/ cancels
+! that only inside the Ads blocker, so the player said "An error occurred.
+! Please try again later." Only the stream-creation fetch, only on
+! cbssports.com: the ad and tracking calls on doubleclick.net stay blocked.
+@@||pubads.g.doubleclick.net/ssai/$xmlhttprequest,domain=cbssports.com

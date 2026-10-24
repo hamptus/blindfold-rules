@@ -10,3 +10,22 @@
 ! every /watch/ video page showed its poster and never built a player
 ! (Safari sitecheck 2026-10-23: 0 video elements, Baseline and AdGuard 3).
 @@||global.ketchcdn.com^$domain=cbssports.com
+
+! --- Mobile gaps found by the iOS sitecheck (2026-10-23) ---------------------------
+! cnn.com: WBD UserConsent's US "Legal Terms and Privacy" acknowledgment modal
+! (role=dialog inside an unclassed fixed backdrop, z-index 999999) covers the
+! page on phone and desktop and freezes the body with inline position:fixed
+! and overflow:hidden. Hidden here (the terms are not acknowledged for the
+! user); cosmetic.js frees the stranded freeze once it has hidden the backdrop.
+cnn.com#?#div[role="dialog"][aria-modal="true"]:has-text(/^\s*Legal Terms and Privacy/):upward(1)
+! legacy.com (Framer): the one-time "Your own space on Legacy." sign-up
+! popover under the header. Only that portal; menus use the same portal root.
+legacy.com#?##overlay > div[data-framer-portal-id]:has(div[role="dialog"]:has-text(/^\s*Your own space on Legacy/))
+! weather.com: the floating "Get the App" pill above the phone bottom nav.
+weather.com##div[data-testid="get-app-button"]
+! Dotdash Meredith (Mantle) recipe sites: the MyRecipes app banner is already
+! hidden by the lists, but `.mntl-site-wide-notification ~ main {top:4.5rem}`
+! still pushes the page down, leaving an empty 72 px band under the header.
+! Removing the hidden banner lets main sit under the header again. Only the
+! MyRecipes app promo (its link goes to myrecipesapp.onelink.me), never other notices.
+allrecipes.com,simplyrecipes.com,eatingwell.com,seriouseats.com,foodandwine.com,southernliving.com#?#.mntl-site-wide-notification:has(a[href*="myrecipesapp.onelink.me"]):remove()

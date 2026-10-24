@@ -10,6 +10,10 @@ rules on top, and writes one blockerList.json per content blocker:
     Annoyances ← Fanboy's Annoyance      + curated cosmetic/CMP/popup rules
                  (includes EasyList Cookie + Fanboy Social)
 
+Each blocker's URL exceptions that pass the checks in "Cross-blocker network
+exceptions" below are also copied into the other two blockers, because Safari
+never lets one content blocker's exception cancel another's block.
+
 Safari allows 150,000 rules per content blocker. Caps below leave headroom
 in the Annoyances blocker for the AI / custom / imported lists that merge
 into it at compile time (imports are capped at 50,000 in the app).
@@ -79,7 +83,8 @@ SOURCES = {
             "urls": ["https://pgl.yoyo.org/adservers/serverlist.php?hostformat=adblockplus&showintro=0&mimetype=plaintext"],
         }],
         # Blindfold's own fixes for this blocker. An exception only cancels
-        # blocks in its own content blocker, so Privacy fixes live here.
+        # blocks in its own content blocker, so Privacy fixes live here
+        # (propagate_exceptions() copies the qualifying ones to the others).
         "local": ["blindfold-privacy.txt"],
         "max_rules": 145_000,
         "output": "ContentBlockers/Privacy/blockerList.json",
@@ -227,6 +232,351 @@ def lint_rules(rules):
     return problems
 
 
+# --- Cross-blocker network exceptions ----------------------------------------
+# Safari runs every content blocker on its own: an `ignore-previous-rules` in
+# one list never cancels a block in another. EasyList (Ads) carries
+# @@||pubads.g.doubleclick.net/ssai/ so Google DAI video streams can be
+# created, but Peter Lowe's list in Privacy blocks all of doubleclick.net, so
+# the CBS Sports live player failed until blindfold-privacy.txt copied the
+# exception by hand. This step copies a source blocker's URL exceptions into
+# the other blockers, after their block rules, so one list's breakage fix
+# reaches the others.
+#
+# Only exceptions that pass every check below are copied. The checks keep a
+# fix written for ads from opening a hole in the tracker blocker:
+#
+#   1. URL exceptions only: `ignore-previous-rules` rules from the converter's
+#      network_exceptions bucket. $document, $elemhide and $generichide
+#      exceptions live in other buckets and are never copied; cosmetic
+#      exceptions (#@#) never become network rules; $genericblock is not
+#      converted at all.
+#   2. Anchored to a concrete host (`||host...`). An unanchored pattern such
+#      as `@@/gtm.js$domain=amd.com` cancels that path on every host,
+#      trackers included. Match-everything filters fail this check too, so a
+#      page-wide `@@*$domain=...` is never copied.
+#   3. Narrow: it must name a path beyond the host. A bare `@@||host^` with
+#      no $domain= would unblock that whole host on every site; with a
+#      $domain= scope (`@@||moatads.com^$script,domain=nascar.com`) it would
+#      still re-enable a host the target blocks as a tracker, on every page
+#      of that site, so it is not copied either (3b). A path exception may
+#      be site-scoped or unscoped. An unscoped path
+#      exception is copied only from a blocker's primary list (EasyList,
+#      EasyPrivacy, Fanboy) or Blindfold's own lists: supplements such as
+#      EasyList China carry unscoped carve-outs for trackers their own rules
+#      over-block (`@@||wl.jd.com/wl.js`), so only their site-scoped
+#      exceptions travel.
+#   4. The target only blocks that URL with a whole-host rule (`||host^` on
+#      the host, a parent or a subdomain). The exception then carves a hole in a broad
+#      host block, which is the CBS case. When the target blocks the path
+#      itself (`||host/path`, a generic `/path` pattern), its maintainers
+#      judged that exact resource, and their block stands. When nothing in
+#      the target matches, the copy would be dead weight and is skipped.
+#
+#   5. Not ad-serving infrastructure (AD_INFRA_* below): GPT/securepubads,
+#      googletagservices, pagead2/adservice, Amazon (apstag), header bidding
+#      (prebid, bid adapters), ad verification, native/video ad networks.
+#      Ad lists except these per site so a page's ad stack loads where the
+#      list authors chose to show ads; copied into Privacy they re-enabled
+#      gpt.js and ppub_config on weather.com, which works without them.
+#      Only the allow-set (AD_INFRA_ALLOW) passes: proven content fixes such
+#      as Google DAI stream creation (pubads.g.doubleclick.net/ssai/), which
+#      CBS Sports live video needs.
+#
+# The copied rule keeps the converter's if-domain, load-type and resource-type
+# exactly, with one narrowing: a copy that would also match top-frame page
+# loads (no resource-type, or `document` without the child-frame pin) is
+# split so it never matches the page itself. An ignore-previous-rules that
+# matches the page URL also cancels the target's element hiding for that
+# page, which the source list never asked for.
+
+HOST_END = r"([^a-zA-Z0-9_.%-].*)?$"
+ANCHORED_HOST = re.compile(r"((?:[a-z0-9-]+\\\.)+[a-z0-9-]+)", re.I)
+HOST_TERMINATORS = ("\\/", abp2safari.SEPARATOR, ":", "$", "\\?")
+# Every Safari type except `document`, for the non-page half of a split copy.
+NON_PAGE_TYPES = sorted(set(abp2safari.ALL_TYPES) | {"popup"})
+SITE_SCOPE_KEYS = ("if-domain", "if-top-url")
+CROSS_EXAMPLES = 3
+
+# Rule 5. Registrable domains whose URLs are ad serving, bidding or ad
+# verification: an exception on any of their hosts is never copied. Taken
+# from what the cross-blocker step actually kept from today's lists.
+AD_INFRA_DOMAINS = frozenset({
+    # Google ad serving
+    "doubleclick.net", "googlesyndication.com", "googletagservices.com",
+    "googleadservices.com", "2mdn.net", "imasdk.googleapis.com",
+    # Amazon, header bidding, SSPs, exchanges
+    "amazon-adsystem.com", "assoc-amazon.com", "adnxs.com", "adnxs-simple.com",
+    "rubiconproject.com", "pubmatic.com", "improvedigital.com", "criteo.com",
+    "criteo.net", "openx.net", "casalemedia.com", "indexww.com", "smartadserver.com",
+    "adform.net", "htlbid.com", "yieldlove.com", "optad360.net", "proper.io",
+    "triplelift.com", "sharethrough.com", "sovrn.com", "lijit.com", "33across.com",
+    "gumgum.com", "kargo.com", "sonobi.com", "yieldmo.com", "media.net",
+    "advertising.com", "adtech.de", "weborama.fr", "grapeshot.co.uk",
+    # Publisher ad managers and ad-supported networks
+    "adthrive.com", "mediavine.com", "ezodn.com", "vntsm.com", "adinplay.com",
+    "playwire.com", "orangeclickmedia.com", "bf-ad.net", "uimserv.net",
+    "pagefair.com", "infolinks.com", "advertserve.com", "ladsp.com",
+    # Native, recommendation and video ad networks
+    "taboola.com", "outbrain.com", "popin.cc", "ntv.io", "connatix.com",
+    "aniview.com", "caroda.io", "vdo.ai", "ex.co", "primis.tech", "teads.tv",
+    "spotxchange.com", "spotx.tv", "smartclip.net", "fwmrm.net", "liverail.com",
+    "adap.tv", "springserve.com", "getpublica.com", "lfstmedia.com",
+    "adswizz.com",
+    # Ad verification and ad pixels
+    "adsafeprotected.com", "doubleverify.com", "moatads.com",
+    "confiant-integrations.net", "ads-twitter.com",
+    # Affiliate and adult/pop ad networks
+    "linksynergy.com", "pepperjamnetwork.com", "pjtra.com", "pntrac.com",
+    "pntrs.com", "zenaps.com", "admitad.com", "alipromo.com", "trafficjunky.net",
+    "exoclick.com", "exosrv.com", "magsrv.com", "realsrv.com", "tsyndicate.com",
+    "juicyads.com", "adtng.com",
+    # Regional ad networks
+    "adriver.ru", "adfox.ru", "begun.ru", "adspirit.de", "mediav.com",
+})
+# Ad serving on hosts that also serve content: (host suffix, path prefix).
+AD_INFRA_PATHS = (
+    ("google.com", "/adsense/"),
+    ("yandex.ru", "/ads/"),
+)
+AD_INFRA_HOST_PREFIXES = ("adservice.google.", "an.yandex.")
+# First-party copies of an ad stack (`abcnews.com/.../prebid.min.js`).
+AD_INFRA_PATH_TOKENS = re.compile(
+    r"prebid|apstag|pubads_impl|/gpt\.js|adsbygoogle|show_ads|/gampad/|admanager|vpaid")
+# Proven content fixes that stay copyable: Google Dynamic Ad Insertion
+# creates the video stream itself here (CBS Sports live, history.com VOD),
+# and the HLS playlists it returns are the player's only source.
+AD_INFRA_ALLOW = (
+    ("pubads.g.doubleclick.net", "/ssai/"),
+    ("pubads.g.doubleclick.net", "/ondemand/"),
+)
+CANARY_URL = "https://canary.invalid/x"
+
+
+def parse_anchored(url_filter):
+    """`||host...` url-filter -> (host, path, path_prefix), or None when the
+    filter is not anchored to one concrete host. `path` is the literal text
+    after the host with wildcards removed; `path_prefix` stops at the first
+    wildcard."""
+    prefix = abp2safari.DOMAIN_PREFIX
+    if not url_filter.startswith(prefix):
+        return None
+    rest = url_filter[len(prefix):]
+    m = ANCHORED_HOST.match(rest)
+    if not m:
+        return None
+    after = rest[m.end():]
+    if after and not after.startswith(HOST_TERMINATORS) and after != HOST_END:
+        return None   # the host continues with a wildcard: `cdn.*.example`
+    host = m.group(1).replace("\\.", ".").lower()
+    if after.endswith(HOST_END):
+        after = after[: -len(HOST_END)]
+    after = after.replace(abp2safari.SEPARATOR, "/")
+
+    def unescape(text):
+        return re.sub(r"\\(.)", r"\1", text).rstrip("$")
+    path_prefix = unescape(after.split(".*")[0]).lower()
+    path = unescape(after.replace(".*", "")).lower()
+    return host, path, path_prefix
+
+
+def _hosts_related(a, b):
+    return a == b or a.endswith("." + b) or b.endswith("." + a)
+
+
+def _base(host):
+    return ".".join(host.split(".")[-2:])
+
+
+def required_literal(url_filter):
+    """The longest literal run every URL the regex matches must contain
+    (lowercased), or "" when it cannot be read safely. Used only to skip
+    regex searches that cannot match."""
+    if ")?" in url_filter:
+        return ""   # an optional group: its literals are not required
+    text = re.sub(r"\[[^\]]*\]", "\0", url_filter)
+    runs = re.findall(r"(?:\\.|[A-Za-z0-9_=&%,;:'~!@#-])+", text)
+    best = max((re.sub(r"\\(.)", r"\1", run) for run in runs), key=len, default="")
+    return best.lower()
+
+
+class BlockIndex:
+    """A target blocker's block rules, indexed to answer: how does this
+    blocker block a given exception's URL? Match-everything blocks (typed
+    globals such as `*$ping,third-party`, or `|https:$domain=...`) are left
+    out: an exception that only cancels those is not worth copying."""
+
+    def __init__(self, rules):
+        self.by_base = {}
+        self.generic = []
+        for rule in rules:
+            if rule.get("action", {}).get("type") != "block":
+                continue
+            url_filter = rule["trigger"].get("url-filter", "")
+            if url_filter in MATCH_EVERYTHING_FILTERS:
+                continue
+            parsed = parse_anchored(url_filter)
+            if parsed:
+                host, path, path_prefix = parsed
+                host_level = not re.search(r"[a-z0-9]", path)
+                self.by_base.setdefault(_base(host), []).append(
+                    (host, path_prefix, host_level, url_filter))
+            else:
+                self.generic.append((required_literal(url_filter), url_filter))
+        self._compiled = {}
+        # Patterns that match any URL at all (`|https:$domain=...`) block
+        # whole pages' worth of requests, not this host: same as above.
+        self.generic = [(literal, url_filter) for literal, url_filter in self.generic
+                        if not self._search(url_filter, CANARY_URL)]
+
+    def _search(self, url_filter, url):
+        pattern = self._compiled.get(url_filter)
+        if pattern is None:
+            try:
+                pattern = re.compile(url_filter, re.I)
+            except re.error:
+                pattern = re.compile(r"(?!)")
+            self._compiled[url_filter] = pattern
+        return pattern.search(url) is not None
+
+    def classify(self, host, path, path_prefix):
+        """'path' when a rule names this resource, 'host' when only rules
+        that block the whole host do, None when nothing blocks it. A rule
+        that also matches the bare host URL blocks the whole host, so it
+        counts as a host block whatever its shape (`.doubleclick.net/`)."""
+        sample = f"https://{host}{path if path[:1] in ('/', '?', ':') else '/' + path}"
+        bare = f"https://{host}/"
+        sample_lower = sample.lower()
+        host_hit = False
+        for rule_host, rule_prefix, host_level, url_filter in self.by_base.get(_base(host), ()):
+            if not _hosts_related(host, rule_host):
+                continue
+            if host_level:
+                # A whole-host block on a subdomain of the exception's host
+                # is still just a host block the exception narrows.
+                host_hit = True
+            elif self._search(url_filter, sample):
+                if self._search(url_filter, bare):
+                    host_hit = True
+                else:
+                    return "path"
+            elif rule_prefix.startswith(path_prefix):
+                # A narrower path rule inside the excepted area.
+                return "path"
+        for literal, url_filter in self.generic:
+            if literal and literal not in sample_lower:
+                continue
+            if self._search(url_filter, sample):
+                if self._search(url_filter, bare):
+                    host_hit = True
+                else:
+                    return "path"
+        return "host" if host_hit else None
+
+
+def page_safe_copies(rule):
+    """The rule, split so no copy matches a top-frame page load."""
+    trigger = rule["trigger"]
+    types = trigger.get("resource-type")
+    pinned = trigger.get("load-context") == ["child-frame"]
+    if types is not None and ("document" not in types or pinned):
+        return [rule]
+    others = NON_PAGE_TYPES if types is None else [t for t in types if t != "document"]
+    copies = []
+    if others:
+        copies.append({"trigger": {**trigger, "resource-type": sorted(others)},
+                       "action": dict(rule["action"])})
+    if "load-context" not in trigger:
+        copies.append({"trigger": {**trigger, "resource-type": ["document"],
+                                   "load-context": ["child-frame"]},
+                       "action": dict(rule["action"])})
+    return copies
+
+
+def is_ad_infrastructure(host, path, path_prefix):
+    """Rule 5: does this exception's URL belong to ad serving?"""
+    if any(host == h and path_prefix.startswith(p) for h, p in AD_INFRA_ALLOW):
+        return False
+    labels = host.split(".")
+    if any(".".join(labels[i:]) in AD_INFRA_DOMAINS for i in range(len(labels) - 1)):
+        return True
+    if host.startswith(AD_INFRA_HOST_PREFIXES):
+        return True
+    if any((host == h or host.endswith("." + h)) and path_prefix.startswith(p)
+           for h, p in AD_INFRA_PATHS):
+        return True
+    return bool(AD_INFRA_PATH_TOKENS.search(path))
+
+
+def cross_exception_verdict(rule, index, unscoped_ok=True):
+    """'keep' or the reason one source exception is not copied into the
+    blocker `index` describes. See the rules above. `unscoped_ok` is False
+    for an exception that came from a supplement list."""
+    if rule.get("action", {}).get("type") != "ignore-previous-rules":
+        return "not-a-url-exception"
+    trigger = rule["trigger"]
+    parsed = parse_anchored(trigger.get("url-filter", ""))
+    if not parsed:
+        return "not-host-anchored"
+    host, path, path_prefix = parsed
+    site_scoped = any(key in trigger for key in SITE_SCOPE_KEYS)
+    if not re.search(r"[a-z0-9]", path):
+        # Rule 3b: a whole-host exception is never copied, even scoped.
+        return "scoped-whole-host" if site_scoped else "unscoped-whole-host"
+    if not site_scoped and not unscoped_ok:
+        return "unscoped-from-supplement"
+    if is_ad_infrastructure(host, path, path_prefix):
+        return "ad-infrastructure"
+    how = index.classify(host, path, path_prefix)
+    if how == "path":
+        return "target-blocks-this-path"
+    if how is None:
+        return "no-op-in-target"
+    return "keep"
+
+
+def propagate_exceptions(states):
+    """Copies each blocker's URL exceptions into the other blockers'
+    network_exceptions bucket (after their block rules in assemble()).
+    Returns {(source, target): {"keep"/reason: [rules]}} for reporting."""
+    sources = {list_id: abp2safari.dedupe(state["buckets"]["network_exceptions"])
+               for list_id, state in states.items()}
+    unscoped_ok = {list_id: state.get("unscoped_ok") for list_id, state in states.items()}
+    report = {}
+    for target, state in states.items():
+        index = BlockIndex(state["buckets"]["network"])
+        seen = {json.dumps(r, sort_keys=True) for r in state["buckets"]["network_exceptions"]}
+        added = []
+        for source, rules in sources.items():
+            if source == target:
+                continue
+            verdicts = report.setdefault((source, target), {})
+            trusted = unscoped_ok[source]
+            for rule in rules:
+                verdict = cross_exception_verdict(
+                    rule, index,
+                    trusted is None or json.dumps(rule, sort_keys=True) in trusted)
+                verdicts.setdefault(verdict, []).append(rule)
+                if verdict != "keep":
+                    continue
+                for copy in page_safe_copies(rule):
+                    key = json.dumps(copy, sort_keys=True)
+                    if key not in seen:
+                        seen.add(key)
+                        added.append(copy)
+        state["buckets"]["network_exceptions"].extend(added)
+        state["cross_added"] = len(added)
+    return report
+
+
+def print_cross_report(report):
+    for (source, target), verdicts in report.items():
+        counts = {k: len(v) for k, v in sorted(verdicts.items())}
+        print(f"  exceptions {source} -> {target}: {counts}")
+        for verdict, rules in sorted(verdicts.items()):
+            for rule in rules[:CROSS_EXAMPLES]:
+                print(f"    {verdict}: {json.dumps(rule['trigger'])[:160]}")
+
+
 MIN_PRIMARY_LINES = 10_000
 MIN_KEPT_FRACTION = 0.70
 
@@ -240,7 +590,9 @@ def previous_rule_count(path):
         return None
 
 
-def build(list_id, spec, cache_dir, allow_shrink=False):
+def collect(list_id, spec, cache_dir, allow_shrink=False):
+    """Converts every source of one blocker into rule buckets. Exceptions
+    from the other blockers are added before finish() assembles them."""
     print(f"[{list_id}]")
     text = fetch(spec["urls"], cache_dir)
     # A truncated download or an HTML challenge page served with a 200 would
@@ -251,6 +603,7 @@ def build(list_id, spec, cache_dir, allow_shrink=False):
         raise SystemExit(f"[{list_id}] primary source has only {len(lines):,} lines "
                          f"(floor {MIN_PRIMARY_LINES:,}); refusing to build")
     buckets, stats, runtime = abp2safari.convert(lines)
+    primary_exceptions = len(buckets["network_exceptions"])
 
     # Supplementary sources (regional lists, Peter Lowe's). Their exceptions
     # ride along too — regional lists whitelist sites their rules would break.
@@ -269,13 +622,26 @@ def build(list_id, spec, cache_dir, allow_shrink=False):
             kept += len(rules)
         print(f"  + {supplement['name']}: {kept:,} rules")
 
+    before_local = len(buckets["network_exceptions"])
     merge_local_lists(list_id, spec, buckets, runtime)
+    # Exceptions from the primary list and Blindfold's own lists may be
+    # copied to other blockers without a $domain= scope; a supplement's
+    # (regional lists, Peter Lowe's, AdGuard Annoyances) only with one.
+    exceptions = buckets["network_exceptions"]
+    unscoped_ok = {json.dumps(rule, sort_keys=True)
+                   for rule in exceptions[:primary_exceptions] + exceptions[before_local:]}
 
     # Curated Blindfold rules ride in front of the standard list's network
     # block so list-level exceptions can still cancel them.
     extras = spec["extras"]()
     buckets["network"] = extras + buckets["network"]
+    return {"buckets": buckets, "stats": stats, "runtime": runtime, "text": text,
+            "unscoped_ok": unscoped_ok}
 
+
+def finish(list_id, spec, state, allow_shrink=False):
+    """Assembles, lints and writes one blocker's list."""
+    buckets, stats, runtime, text = (state[k] for k in ("buckets", "stats", "runtime", "text"))
     rules = abp2safari.assemble(buckets, max_rules=spec["max_rules"])
     problems = lint_rules(rules)
     if problems:
@@ -291,7 +657,9 @@ def build(list_id, spec, cache_dir, allow_shrink=False):
     with open(out, "w", encoding="utf-8") as f:
         json.dump(rules, f, separators=(",", ":"))
     size_mb = os.path.getsize(out) / 1e6
-    print(f"  {out if spec.get('dist') else spec['output']}: {len(rules):,} rules ({size_mb:.1f} MB)")
+    print(f"[{list_id}] {out if spec.get('dist') else spec['output']}: {len(rules):,} rules "
+          f"({size_mb:.1f} MB, cap {spec['max_rules']:,}), "
+          f"{state.get('cross_added', 0):,} copied from other blockers' exceptions")
     interesting = {k: v for k, v in stats.report().items() if v >= 50 or k.startswith("skip")}
     print(f"  stats: {interesting}")
     return len(rules), host_only_domains(text), runtime
@@ -304,6 +672,8 @@ def main():
                                        "instead of the app's bundled files")
     parser.add_argument("--allow-shrink", action="store_true",
                         help="accept a list under 70%% of the one it replaces")
+    parser.add_argument("--no-cross-exceptions", action="store_true",
+                        help="do not copy URL exceptions between blockers (for comparison)")
     args = parser.parse_args()
 
     if args.dist:
@@ -315,8 +685,15 @@ def main():
     total = 0
     estimator_domains = {}
     merged_runtime = {"procedural": [], "scriptlets": []}
+    states = {list_id: collect(list_id, spec, args.cache, args.allow_shrink)
+              for list_id, spec in SOURCES.items()}
+    if args.no_cross_exceptions:
+        print("cross-blocker exceptions: off")
+    else:
+        print("cross-blocker exceptions:")
+        print_cross_report(propagate_exceptions(states))
     for list_id, spec in SOURCES.items():
-        count, domains, runtime = build(list_id, spec, args.cache, args.allow_shrink)
+        count, domains, runtime = finish(list_id, spec, states[list_id], args.allow_shrink)
         total += count
         estimator_domains[list_id] = domains
         for key in merged_runtime:
